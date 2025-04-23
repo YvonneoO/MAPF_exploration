@@ -1,26 +1,15 @@
 #!/usr/bin/python3
 import os
 import rospy
-import argparse
-import glob
+import copy
+import time
 from pathlib import Path
 from cbs import CBSSolver
-from pbs import PBSSolver
 from single_agent_planner import get_sum_of_cost
-# from mapf_exploration.msg import robotStates
 from map_manager.msg import robotStates
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path as waypoints
-from mapf_exploration.msg import PathArray 
-from mapf_exploration.msg import gridInfoGain
-from matplotlib.patches import Circle, Rectangle
-from matplotlib.lines import Line2D
-import matplotlib.pyplot as plt
-import numpy as np
-from matplotlib import animation
-import math
-import copy
-import time
+from mapf_exploration.msg import PathArray, gridInfoGain
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
 from std_msgs.msg import ColorRGBA
@@ -40,15 +29,11 @@ class MAPF_Publisher:
         self.paths = None
         self.replan = True
 
-        # simple office
-
-        
-        # industry office
         self.grid_size = 10.0
         self.map_size_x = 40
         self.map_size_y = 40
-        self.map_origin_x = -self.map_size_x / 2.0
-        self.map_origin_y = -self.map_size_y / 2.0
+        self.map_origin_x = -20.0
+        self.map_origin_y = -20.0
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
         file = os.path.join(script_dir, instance)
@@ -75,32 +60,39 @@ class MAPF_Publisher:
         
         # subscribe information gain of the large grid regions calculated by the explorer
         self.info_gain_subscriber = rospy.Subscriber('/grid_info_gain', gridInfoGain, self.infoGainCB)
-        
-        # TO DO:
-        # ? subscribe dependent mode replan flag?
-        # replan due to ugv unable to complete exploring the region, force-set this cbs_waypoint (the region) to uav
-        # TO DO:
-        
-        # cbs waypoints represents the center of large grid regions, 
+
         self.waypoints_visualizer = rospy.Publisher('/cbs_waypoints', MarkerArray, queue_size=10)
         self.path_publisher = rospy.Publisher(expRegion_topic, PathArray, queue_size=100)
+
+        # Store the most recent valid path
+        self.last_valid_path_array = None
         
+        # Add a separate publisher timer with higher frequency
+        self.publish_timer = rospy.Timer(rospy.Duration(0.5), self.publish_paths)
         
         self.timer = rospy.Timer(rospy.Duration(5.0), self.solve)
         self.vis_timer = rospy.Timer(rospy.Duration(0.5), self.vis_cb)
         self.replan_timer = rospy.Timer(rospy.Duration(1.0), self.replan_cb)
+        
         print("current time:", rospy.Time.now())
 
+    def publish_paths(self, event=None):
+        """Continuously publish the most recent valid path"""
+        if self.last_valid_path_array is not None:
+            # Add timestamp
+            self.last_valid_path_array.header.stamp = rospy.Time.now()
+            self.path_publisher.publish(self.last_valid_path_array)
+            
     def replan_cb(self, event=None):
         # if no path is found, replan
         if self.paths is None:
             self.replan = True
             return
         
-        for (i,j) in self.starts:
-            if self.information_map[i][j] <0.3:
-                self.replan = True
-                return
+        # for (i,j) in self.starts:
+        #     if self.information_map[i][j] <0.3:
+        #         self.replan = True
+        #         return
         # for any of the path, the information gain of any of the waypoint is lower than 0.1, replan
         # self.replan = True
         # for path in self.paths:
@@ -109,9 +101,17 @@ class MAPF_Publisher:
         #             self.replan = False
         #             return
         
+        # TO DO: for grid info gain > 0.3, but local info gain < 0.5, ugv cannot finish, assign to uav
+        # for path in self.paths:
+        #     for waypoint in path:
+        #         if self.information_map[waypoint[0]][waypoint[1]] > 0.3:
+        #             if self.information_map[waypoint[0]][waypoint[1]] < 0.5:
+        #                 self.replan = True
+        #                 return
+
     def vis_cb(self, event=None):
         if self.paths is None:
-            return 
+            return
 
         transparent = 0.5
         colors = [
@@ -128,7 +128,7 @@ class MAPF_Publisher:
         for i, point_list in enumerate(self.paths):
             color = colors[i % len(colors)]
 
-            # Marker for CUBE_LIST (waypoints as cubes)
+            # Marker for CUBE_LIST (waypoints / regions as cubes)
             cube_marker = Marker()
             cube_marker.header.frame_id = "map"
             cube_marker.id = i
@@ -152,14 +152,14 @@ class MAPF_Publisher:
 
             for point in point_list:
                 p = Point()
-                p.x = self.map_origin_x + point[0] * self.grid_size + self.grid_size / 2
-                p.y = self.map_origin_y + point[1] * self.grid_size + self.grid_size / 2
+                p.x = (point[0] + 0.5) * self.grid_size + self.map_origin_x
+                p.y = (point[1] + 0.5) * self.grid_size + self.map_origin_y
                 p.z = 1.0
                 cube_marker.points.append(p)
                 line_marker.points.append(p)
 
             marker_array.markers.append(cube_marker)
-            marker_array.markers.append(line_marker)
+            # marker_array.markers.append(line_marker)
 
         self.waypoints_visualizer.publish(marker_array)
 
@@ -185,14 +185,16 @@ class MAPF_Publisher:
             if not ready:
                 print("robot %i is not ready" % (i+1))
                 return
-        
-        
+
     def infoGainCB(self, info_gain_msg: gridInfoGain):
-        if self.information_map[info_gain_msg.grid_idx_x][info_gain_msg.grid_idx_y] >= info_gain_msg.percent_info_gain:
-            self.information_map[info_gain_msg.grid_idx_x][info_gain_msg.grid_idx_y] = info_gain_msg.percent_info_gain
-        #     print("real time information map: ", self.information_map)
-        # print("receive info gain : %i, %i, %f" % (info_gain_msg.grid_idx_x, info_gain_msg.grid_idx_y, info_gain_msg.percent_info_gain))
-        # self.replan = True
+        x_idx = info_gain_msg.grid_idx_x
+        y_idx = info_gain_msg.grid_idx_y
+
+        if 0 <= x_idx < len(self.information_map) and 0 <= y_idx < len(self.information_map[0]):
+            if self.information_map[x_idx][y_idx] >= info_gain_msg.global_percent_info_gain:
+                self.information_map[x_idx][y_idx] = info_gain_msg.global_percent_info_gain
+        else:
+            rospy.logwarn(f"Grid indices out of range: ({x_idx}, {y_idx}). Map size: {len(self.information_map)}x{len(self.information_map[0])}")
 
     def solve(self, event=None): 
         """ callback function for publisher """
@@ -226,7 +228,12 @@ class MAPF_Publisher:
                         path_waypoints.poses.append(point)
                     path_array.PathArray.append(path_waypoints)
                 # path_array.header.stamp = img_timestamp   
-                rospy.loginfo("Publishing path array")
+                # rospy.loginfo("Publishing path array")
+                # self.path_publisher.publish(path_array)
+                        
+                # Store the path for continuous publishing
+                self.last_valid_path_array = path_array
+                # Initial publish
                 self.path_publisher.publish(path_array)
             else:
                 raise RuntimeError("Unknown solver!")

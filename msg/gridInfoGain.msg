@@ -1,3 +1,4 @@
 int64 grid_idx_x
 int64 grid_idx_y
-float64 percent_info_gain
+float64 local_percent_info_gain
+float64 global_percent_info_gain

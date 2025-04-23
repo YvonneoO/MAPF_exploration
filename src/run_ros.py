@@ -257,7 +257,7 @@ class MAPF_Publisher:
         if 0 <= x_idx < len(self.information_map) and 0 <= y_idx < len(self.information_map[0]):
             cell = self.information_map[x_idx][y_idx]
             if cell['global'] == 0.0:
-                ROS_WARN("skip updates for obstacles defined in the initial 2d grid map")
+                rospy.logwarn("skip updates for obstacles defined in the initial 2d grid map")
             cell['global'] = min(cell['global'], info_gain_msg.global_percent_info_gain)
             cell['local'] = min(cell['local'], info_gain_msg.local_percent_info_gain)
         else:

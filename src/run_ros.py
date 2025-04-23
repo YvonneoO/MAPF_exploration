@@ -30,10 +30,21 @@ class MAPF_Publisher:
         self.replan = True
 
         self.grid_size = 10.0
-        self.map_size_x = 40
-        self.map_size_y = 40
-        self.map_origin_x = -20.0
-        self.map_origin_y = -20.0
+        self.map_size_x = 42
+        self.map_size_y = 42
+        self.map_origin_x = -21.0
+        self.map_origin_y = -21.0
+        
+        # exploration status threshold
+        self.grid_explored_thres = 0.3
+        self.grid_unexplored_thres = 0.7
+        self.localIG_thres = 0.1
+        self.stuck_duration_thres = 50.0
+        
+        self.current_region = {} # robot_id -> (x, y)
+        self.region_enter_time = {} # robot_id -> rospy.Time
+        self.region_has_left = {}  # robot_id -> bool
+        
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
         file = os.path.join(script_dir, instance)
@@ -45,14 +56,20 @@ class MAPF_Publisher:
     
         print("***Import an instance***")
         self.my_map= self.import_mapf_instance(file)
+        self.map_height = len(self.my_map)
+        self.map_width = len(self.my_map[0]) if self.map_height > 0 else 0
+
         self.starts = [(0,0) for i in range(self.num_agents)]
         self.robots_ready = [False for i in range(self.num_agents)]
+        self.restricted_assignments = {i: set() for i in range(self.num_agents)}
         #self.print_mapf_instance(self.my_map, self.starts, self.goals)
         
         self.information_map = copy.deepcopy(self.my_map)
-        for i in range(len(self.information_map)):
-            for j in range(len(self.information_map[0])):
-                self.information_map[i][j] = 1 - self.information_map[i][j]
+        self.information_map = [
+            [{'global': 1.0 if not self.my_map[i][j] else 0.0, 'local': 1.0}
+            for j in range(len(self.my_map[0]))]
+            for i in range(len(self.my_map))
+        ]
         
         rospy.loginfo("MAPF initialization complete. Ready to start planning")
         
@@ -86,13 +103,55 @@ class MAPF_Publisher:
     def replan_cb(self, event=None):
         # if no path is found, replan
         if self.paths is None:
+            rospy.loginfo("[CBS Replan Trigger] No path found, replan.")
             self.replan = True
             return
         
-        # for (i,j) in self.starts:
-        #     if self.information_map[i][j] <0.3:
-        #         self.replan = True
-        #         return
+        for robot_id, path in enumerate(self.paths):
+            # if any robot finishes its path, replan
+            all_explored = True
+            for (x, y) in path:
+                cell = self.information_map[x][y]
+                if cell['global'] >= self.grid_explored_thres:  # not fully explored yet
+                    all_explored = False
+                    break
+            if all_explored:
+                rospy.loginfo(f"[CBS Replan Trigger] Robot {robot_id+1} has finished all assigned regions.")
+                self.replan = True
+                return
+            
+            # if any robot stucks in current exp region, not able to complete, replan
+            # for (x, y) in path:
+            #     cell = self.information_map[x][y]
+            #     if cell['global'] >= 0.8 and cell['local'] <= 0.005:
+            #         rospy.logwarn(f"[CBS Reassignment] Robot {robot_id+1} cannot finish Region ({x},{y}), reassigning.")
+            #         self.restricted_assignments[robot_id].add((x, y))
+            #         self.replan = True
+            #         return
+            
+        # if any robot stucks in current exp region, not able to complete, replan
+        for robot_id in range(self.num_agents):
+            region = self.current_region.get(robot_id)
+            enter_time = self.region_enter_time.get(robot_id)
+            has_left = self.region_has_left.get(robot_id, False)
+
+            if region is None or enter_time is None or has_left:
+                continue
+
+            duration = (rospy.Time.now() - enter_time).to_sec()
+            
+            if self.robots_ready[robot_id] and duration < self.stuck_duration_thres:
+                continue
+
+            x, y = region
+            cell = self.information_map[x][y]
+            if cell['global'] >= self.grid_unexplored_thres and cell['local'] <= self.localIG_thres:
+                rospy.logwarn(f"[CBS Reassignment] Robot {robot_id+1} stuck in Region ({x},{y}) for {duration:.1f}s. Reassigning.")
+                self.restricted_assignments[robot_id].add((x, y))
+                self.replan = True
+                return
+
+        
         # for any of the path, the information gain of any of the waypoint is lower than 0.1, replan
         # self.replan = True
         # for path in self.paths:
@@ -100,14 +159,6 @@ class MAPF_Publisher:
         #         if self.information_map[waypoint[0]][waypoint[1]] > 0.2:
         #             self.replan = False
         #             return
-        
-        # TO DO: for grid info gain > 0.3, but local info gain < 0.5, ugv cannot finish, assign to uav
-        # for path in self.paths:
-        #     for waypoint in path:
-        #         if self.information_map[waypoint[0]][waypoint[1]] > 0.3:
-        #             if self.information_map[waypoint[0]][waypoint[1]] < 0.5:
-        #                 self.replan = True
-        #                 return
 
     def vis_cb(self, event=None):
         if self.paths is None:
@@ -115,12 +166,13 @@ class MAPF_Publisher:
 
         transparent = 0.5
         colors = [
+            ColorRGBA(1.0, 1.0, 0.0, transparent),  # Yellow #ugv
+            ColorRGBA(0.0, 0.0, 1.0, transparent),  # Blue #uav
+            ColorRGBA(0.0, 1.0, 0.0, transparent),  # Green
+            ColorRGBA(1.0, 0.0, 0.0, transparent),  # Red
             ColorRGBA(1.0, 1.0, 0.0, transparent),  # Yellow
             ColorRGBA(1.0, 0.0, 1.0, transparent),  # Magenta
             ColorRGBA(0.0, 1.0, 1.0, transparent),  # Cyan
-            ColorRGBA(1.0, 0.0, 0.0, transparent),  # Red
-            ColorRGBA(0.0, 1.0, 0.0, transparent),  # Green
-            ColorRGBA(0.0, 0.0, 1.0, transparent),  # Blue
         ]
 
         marker_array = MarkerArray()
@@ -159,7 +211,7 @@ class MAPF_Publisher:
                 line_marker.points.append(p)
 
             marker_array.markers.append(cube_marker)
-            # marker_array.markers.append(line_marker)
+            marker_array.markers.append(line_marker)
 
         self.waypoints_visualizer.publish(marker_array)
 
@@ -170,16 +222,28 @@ class MAPF_Publisher:
         # print(self.robotState.ready)
         # print(self.robotState.position[0])
         # print(self.robotState.position[1])
-        # self.starts[self.robotState.robot_id-1] = (
-        #                                             int((self.map_size_x/2-self.robotState.position[0])//self.grid_size), 
-        #                                             int((self.map_size_y/2-self.robotState.position[1])//self.grid_size)
-        #                                            )
+
+        robot_id = self.robotState.robot_id - 1
         grid_x = int((self.robotState.position[0] - self.map_origin_x) // self.grid_size)
         grid_y = int((self.robotState.position[1] - self.map_origin_y) // self.grid_size)
+        current_grid = (grid_x, grid_y)
+        
+        # Initialize tracking
+        if robot_id not in self.current_region:
+            self.current_region[robot_id] = current_grid
+            self.region_enter_time[robot_id] = rospy.Time.now()
+            self.region_has_left[robot_id] = False
+        else:
+            last_region = self.current_region[robot_id]
 
-        self.starts[self.robotState.robot_id - 1] = (grid_x, grid_y)
+            if current_grid != last_region:
+                self.region_has_left[robot_id] = True  # robot left the region
+                self.current_region[robot_id] = current_grid
+                self.region_enter_time[robot_id] = rospy.Time.now()
 
-        self.robots_ready[self.robotState.robot_id-1] = True
+        self.starts[robot_id] = current_grid
+        self.robots_ready[robot_id] = True
+        
         # print("received start position: ", self.starts)
         for (i, ready) in enumerate(self.robots_ready):
             if not ready:
@@ -191,8 +255,11 @@ class MAPF_Publisher:
         y_idx = info_gain_msg.grid_idx_y
 
         if 0 <= x_idx < len(self.information_map) and 0 <= y_idx < len(self.information_map[0]):
-            if self.information_map[x_idx][y_idx] >= info_gain_msg.global_percent_info_gain:
-                self.information_map[x_idx][y_idx] = info_gain_msg.global_percent_info_gain
+            cell = self.information_map[x_idx][y_idx]
+            if cell['global'] == 0.0:
+                ROS_WARN("skip updates for obstacles defined in the initial 2d grid map")
+            cell['global'] = min(cell['global'], info_gain_msg.global_percent_info_gain)
+            cell['local'] = min(cell['local'], info_gain_msg.local_percent_info_gain)
         else:
             rospy.logwarn(f"Grid indices out of range: ({x_idx}, {y_idx}). Map size: {len(self.information_map)}x{len(self.information_map[0])}")
 
@@ -214,6 +281,7 @@ class MAPF_Publisher:
                 information_map_copy = copy.deepcopy(self.information_map)
                 print("information map copy: ", information_map_copy)
                 cbs = CBSSolver(self.my_map, self.starts, information_map_copy)
+                cbs.restricted_assignments = self.restricted_assignments
                 paths = cbs.explore_environment()
                 rospy.loginfo("CBS solver complete")
                 path_array = PathArray()

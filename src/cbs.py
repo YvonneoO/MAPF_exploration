@@ -98,6 +98,8 @@ class CBSSolver(object):
 
         self.open_list = []
         self.information_map_copy = information_map_copy
+        
+        self.restricted_assignments = {i: set() for i in range(self.num_of_agents)}
 
         # compute heuristics for the low-level search
         self.heuristics = []
@@ -113,14 +115,19 @@ class CBSSolver(object):
         self.num_of_expanded += 1
         return node
     
+    # def update_information_map(self, paths):
+    #     # Update the information map based on the paths
+    #     for path in paths:
+    #         for loc in path:
+    #             self.information_map_copy[loc[0]][loc[1]] = 0  # Mark as explored
     def update_information_map(self, paths):
-        # Update the information map based on the paths
         for path in paths:
             for loc in path:
-                self.information_map_copy[loc[0]][loc[1]] = 0  # Mark as explored
+                self.information_map_copy[loc[0]][loc[1]]['global'] = 0.0
+                self.information_map_copy[loc[0]][loc[1]]['local'] = 0.0
 
     def is_fully_explored(self):
-        return all(cell == 0 for row in self.information_map_copy for cell in row)
+        return all(cell['global'] == 0.0 for row in self.information_map_copy for cell in row)
 
     def find_solution(self):
         """ Finds paths for all agents from their start locations to their goal locations
@@ -141,11 +148,14 @@ class CBSSolver(object):
                 'collisions': []}
         # print("information_map_copy: ", self.information_map_copy)
         for i in range(self.num_of_agents):  # Find initial path for each agent
-            target, path = select_target(self.my_map, self.information_map_copy, self.starts[i], self.heuristics, i, [])
+            print("[find solution]: restricted assignments for agent ", i, ": ", self.restricted_assignments[i])
+            target, path = select_target(self.my_map, self.information_map_copy, self.starts[i], self.heuristics, i, [], self.restricted_assignments[i])
             if target in root['targets']:
                 print("target already in root['targets']")
-                self.information_map_copy[target[0]][target[1]] = 0
-                target, path = select_target(self.my_map, self.information_map_copy, self.starts[i], self.heuristics, i, [])
+                self.information_map_copy[target[0]][target[1]]['global'] = 0.0
+                self.information_map_copy[target[0]][target[1]]['local'] = 0.0
+                print("[find solution]: restricted assignments for agent ", i, ": ", self.restricted_assignments[i])
+                target, path = select_target(self.my_map, self.information_map_copy, self.starts[i], self.heuristics, i, [], self.restricted_assignments[i])
             print("found target for agent ", i, " at ", target)
             if path is None:
                 return None, None
@@ -197,7 +207,8 @@ class CBSSolver(object):
                     new_node['constraints'].append(constraint)
                     agent_index = constraint['agent']
                     start_loc = self.starts[agent_index]
-                    new_target, new_path = select_target(self.my_map, self.information_map_copy, start_loc, self.heuristics, agent_index, new_node['constraints'])
+                    print("[find solution - Add a new child node]: restricted assignments for agent ", i, ": ", self.restricted_assignments[agent_index])
+                    new_target, new_path = select_target(self.my_map, self.information_map_copy, start_loc, self.heuristics, agent_index, new_node['constraints'], self.restricted_assignments[agent_index])
                 if new_path is None:
                     continue
                 new_node['paths'][constraint['agent']] = new_path

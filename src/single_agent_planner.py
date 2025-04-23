@@ -271,7 +271,7 @@ def a_star(my_map, start_loc, goal_loc, h_values, agent, constraints, informatio
             if is_constrained(curr['loc'], child_loc, curr['time_stamp']+1 , constraints_table):
                 continue
             visited_cost = 0
-            if information_map[child_loc[0]][child_loc[1]] == 0:  # Check if the cell was visited
+            if information_map[child_loc[0]][child_loc[1]]['global'] == 0:  # Check if the cell was visited
                 visited_cost += visited_penalty  # Add penalty for visited cells
             child = {'loc': child_loc,
                     'g_val': curr['g_val'] + 1 + visited_cost,
@@ -292,7 +292,7 @@ def a_star(my_map, start_loc, goal_loc, h_values, agent, constraints, informatio
 
     return None  # Failed to find solutions
 
-def select_target(my_map, information_map, start_loc, h_values, agent, constraints):
+def select_target(my_map, information_map, start_loc, h_values, agent, constraints, restricted_set):
     best_information_gain = 0
     best_target = None
     best_path = None
@@ -303,6 +303,9 @@ def select_target(my_map, information_map, start_loc, h_values, agent, constrain
         for i in range(len(my_map)):
             for j in range(len(my_map[0])):
                 goal_loc = (i,j)
+                if (goal_loc in restricted_set):
+                    print("goal location in restricted set: ", goal_loc)
+                    continue
                 if (not in_map(my_map, goal_loc)) or (my_map[goal_loc[0]][goal_loc[1]]):
                     continue
                 if np.sqrt((start_loc[0]-i)**2 + (start_loc[1]-j)**2) >= radius:
@@ -320,7 +323,7 @@ def select_target(my_map, information_map, start_loc, h_values, agent, constrain
                 for loc in path:
                     # print("path location: ", loc)
                     # print("get info gain: ", information_map[loc[0]][loc[1]])
-                    information_gain += information_map[loc[0]][loc[1]]
+                    information_gain += information_map[loc[0]][loc[1]]['global']
                 # update best target
                 # print("expect information gain: ", information_gain)
                 if information_gain > best_information_gain:
